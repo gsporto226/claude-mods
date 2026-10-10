@@ -1,0 +1,8 @@
+{
+  "name": "statusline",
+  "version": "0.1.0",
+  "description": "Customizable status line for Claude Code: lualine-style sections, themes, and data from other mods",
+  "author": {
+    "name": "Gabriel Porto"
+  }
+}

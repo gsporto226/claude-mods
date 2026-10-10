@@ -1,0 +1,14 @@
+{
+  "name": "claude-mods",
+  "owner": {
+    "name": "Gabriel Porto"
+  },
+  "description": "Claude Code mods",
+  "plugins": [
+    {
+      "name": "statusline",
+      "source": "./statusline",
+      "description": "Customizable status line with lualine-style sections, themes, and data from other mods"
+    }
+  ]
+}
