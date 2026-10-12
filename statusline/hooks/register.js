@@ -1,5 +1,5 @@
 import { components } from '../components.js'
-import { themeFor, DEFAULT_THEME } from '../theme.js'
+import { DEFAULT_THEME, THEME_NAMES, themeFor, mergeTheme } from '../theme.js'
 
 const DEFAULT_SECTIONS = {
   a: [{ name: 'mode' }, { name: 'model' }],
@@ -10,52 +10,76 @@ const DEFAULT_SECTIONS = {
   z: [{ name: 'effort' }],
 }
 
-const SECTION_NAMES = ['a', 'b', 'c', 'x', 'y', 'z']
+const DEFAULT_SEPARATORS = { left: ' ', right: ' ' }
 const DROP_ORDER = ['c', 'b', 'x', 'y']
-
-// $.state.get takes plugin and key as string literals so the engine can list what
-// this module reads. That means one const and one call per publisher. A new
-// publisher is a new const, a new call, and a `source` entry in the config.
-const LOCAL_PROXY_STATUSLINE = { plugin: 'local-proxy', key: 'statusline' }
+const LEFT_KEYS = ['a', 'b', 'c']
+const RIGHT_KEYS = ['x', 'y', 'z']
 
 let working = false
 let effort = ''
-let cache = { at: 0, data: null }
-let config = null
+let dirty = true
+const published = new Map()
+const execCache = new Map()
+let cfg = null
+let dataCache = { at: 0, data: null }
 
-function readConfig(options) {
-  const o = options || {}
-  const sections = parseJson(o.sections, DEFAULT_SECTIONS)
-  return {
-    theme: typeof o.theme === 'string' ? o.theme : DEFAULT_THEME,
-    position: o.position === 'below' ? 'below' : 'above',
-    componentSeparators: separators(o.componentSeparators),
-    sectionSeparators: separators(o.sectionSeparators),
-    sections: sections,
-  }
+function publish({ id, values }) {
+  published.set(id, values)
+  dirty = true
 }
 
-function separators(v) {
-  const s = parseJson(v, {})
-  return {
-    left: typeof s.left === 'string' ? s.left : '',
-    right: typeof s.right === 'string' ? s.right : '',
-  }
+function unwrap(result) {
+  return result && typeof result === 'object' && 'value' in result ? result.value : result
 }
 
 function parseJson(value, fallback) {
-  if (typeof value !== 'string' || value.trim() === '') return fallback
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value)
+    } catch {
+      return fallback
+    }
+  }
+  return value == null ? fallback : value
+}
+
+function separators(value) {
+  const s = parseJson(value, DEFAULT_SEPARATORS) || {}
+  return {
+    left: typeof s.left === 'string' ? s.left : DEFAULT_SEPARATORS.left,
+    right: typeof s.right === 'string' ? s.right : DEFAULT_SEPARATORS.right,
+  }
+}
+
+async function readConfig($, options) {
+  const o = options || {}
+  let src = {}
   try {
-    return JSON.parse(value)
+    const s = unwrap(await $.settings.read())
+    const pc = s?.pluginConfigs ?? {}
+    const key = pc['statusline@claude-mods']
+      ? 'statusline@claude-mods'
+      : pc['statusline']
+        ? 'statusline'
+        : Object.keys(pc).find((k) => k.includes('statusline'))
+    const holder = key ? pc[key] : null
+    src = holder && typeof holder === 'object' ? (holder.options ?? holder) : {}
   } catch {
-    return fallback
+    src = {}
+  }
+  return {
+    theme: typeof o.theme === 'string' ? o.theme : DEFAULT_THEME,
+    position: o.position === 'below' ? 'below' : 'above',
+    componentSeparators: separators(src.componentSeparators),
+    sectionSeparators: separators(src.sectionSeparators),
+    sections: parseJson(src.sections, DEFAULT_SECTIONS),
+    themes: parseJson(src.themes, undefined),
   }
 }
 
 async function collect($) {
   const now = Date.now()
-  if (cache.data && now - cache.at < 1000) return cache.data
-
+  if (dataCache.data && now - dataCache.at < 1000) return dataCache.data
   const data = {
     model: null,
     effort: effort || null,
@@ -66,188 +90,197 @@ async function collect($) {
     cost: null,
     startedAt: null,
   }
-
   try {
-    const u = await $.session.usage()
+    const u = unwrap(await $.session.usage())
     if (u && typeof u === 'object') {
-      data.context = u.context || data.context
+      data.context = u.context ?? data.context
       data.rateLimits = Array.isArray(u.rateLimits) ? u.rateLimits : []
       data.cost = u.cost ?? null
       data.startedAt = u.startedAt ?? null
     }
   } catch {}
   try {
-    const m = await $.session.model()
-    data.model = typeof m === 'string' ? m : ((m && (m.name || m.id)) ?? null)
+    const m = unwrap(await $.session.model())
+    data.model = typeof m === 'string' ? m : (m?.name ?? m?.id ?? null)
   } catch {}
   try {
-    data.cwd = (await $.session.cwd()) ?? null
+    data.cwd = unwrap(await $.session.cwd()) ?? null
   } catch {}
-
-  cache = { at: now, data }
+  dataCache = { at: now, data }
   return data
 }
 
-function formatSource(raw, fmt) {
-  if (raw === null || raw === undefined) return ''
-  if (fmt === 'percent') {
-    return typeof raw === 'number' ? Math.round(raw) + '%' : ''
-  }
-  if (fmt === 'account') {
-    if (typeof raw === 'object' && raw.provider) {
-      return raw.alias ? raw.provider + '/' + raw.alias : String(raw.provider)
-    }
+function renderNamed(name, data) {
+  const fn = components[name]
+  if (typeof fn !== 'function') return ''
+  try {
+    // validator constraint: $ is never forwarded into a name lookup; components take data only
+    const r = fn(data)
+    return typeof r === 'string' ? r : r == null ? '' : String(r)
+  } catch {
     return ''
   }
-  return typeof raw === 'string' ? raw : String(raw)
 }
 
-async function readPublished($) {
-  const out = {}
-  try {
-    out['local-proxy.statusline'] = await $.state.get(LOCAL_PROXY_STATUSLINE)
-  } catch {}
-  return out
-}
-
-function resolveOverrides(published, entries) {
-  const out = {}
-  for (const entry of entries) {
-    const src = entry && entry.source
-    if (!src || !src.plugin || !src.key || !src.field) continue
-    const value = published[src.plugin + '.' + src.key]
-    const text = formatSource(value ? value[src.field] : null, src.fmt)
-    if (text) out[entry.name] = text
+function formatValue(raw, fmt) {
+  if (fmt === 'percent') return Number.isFinite(raw) ? Math.round(raw) + '%' : ''
+  if (fmt === 'number') return Number.isFinite(raw) ? String(raw) : ''
+  if (fmt === 'account') {
+    return raw && raw.provider ? (raw.alias ? raw.provider + '/' + raw.alias : raw.provider) : ''
   }
-  return out
+  return typeof raw === 'string' ? raw : raw == null ? '' : String(raw)
 }
 
-function fitSections(columns, sections) {
-  let width = estimateWidth(sections)
-  for (const key of DROP_ORDER) {
-    if (width <= columns || !sections[key] || sections[key].length === 0) continue
-    width -= estimateWidth({ [key]: sections[key] })
-    sections = { ...sections, [key]: [] }
+function entryText(entry, data) {
+  let text = ''
+  if (entry.from) {
+    const v = published.get(entry.from.id)
+    if (v === undefined) {
+      if (entry.name) text = renderNamed(entry.name, data)
+    } else if (typeof entry.from.fmt === 'string' && entry.from.fmt.includes('${')) {
+      text = entry.from.fmt.replace(/\$\{([^}]*)\}/g, (_, k) => String(v?.[k] ?? ''))
+    } else {
+      text = formatValue(v?.[entry.from.field], entry.from.fmt)
+    }
+  } else if (entry.name) {
+    text = renderNamed(entry.name, data)
+  } else if (entry.exec) {
+    text = execCache.get(entry.exec.command)?.text ?? ''
   }
-  return sections
+  if (text === '' || text == null) return ''
+  text = String(text)
+  if (entry.icon) text = entry.icon + ' ' + text
+  if (Number.isFinite(entry.padding)) {
+    const p = ' '.repeat(Math.max(0, entry.padding))
+    text = p + text + p
+  }
+  return text
 }
 
-function estimateWidth(sections) {
-  let n = 0
-  for (const key of SECTION_NAMES) {
+function roughWidth(sections) {
+  let n = 8
+  for (const key of Object.keys(sections)) {
     const list = sections[key]
     if (!Array.isArray(list)) continue
     for (const entry of list) {
-      if (!entry || typeof entry.name !== 'string') continue
-      n += (entry.icon ? entry.icon.length + 1 : 0) + entry.name.length + 4
+      if (!entry) continue
+      n +=
+        (entry.icon ? entry.icon.length + 1 : 0) +
+        (entry.name?.length ?? entry.from?.field?.length ?? entry.exec?.command?.length ?? 4) +
+        4
     }
   }
-  return n + 8
+  return n
 }
 
-export function register(on, options) {
-  config = readConfig(options)
+function fit(columns, sections) {
+  const out = {}
+  for (const k of Object.keys(sections)) out[k] = sections[k]
+  for (const k of DROP_ORDER) {
+    if (roughWidth(out) <= columns) break
+    out[k] = []
+  }
+  return out
+}
 
-  on('session.start', async ($, e, next) => {
-    $.clock.every(1000, () => $.ui.invalidate('ui.render'))
-    return next(e)
-  })
-
-  on('turn.start', async ($, e, next) => {
-    working = true
-    cache.at = 0
-    return next(e)
-  })
-
-  on('turn.complete', async ($, e, next) => {
-    working = false
-    cache.at = 0
-    return next(e)
-  })
-
-  on('turn.step', async function* ($, e, next) {
-    if (e && e.effort) {
-      effort = String(e.effort)
-      cache.at = 0
+async function refreshExec($) {
+  if (!cfg) return
+  const now = Date.now()
+  for (const key of Object.keys(cfg.sections)) {
+    const list = Array.isArray(cfg.sections[key]) ? cfg.sections[key] : []
+    for (const entry of list) {
+      const ex = entry && entry.exec
+      if (!ex || typeof ex.command !== 'string') continue
+      const intervalMs = Number.isFinite(ex.intervalMs) ? ex.intervalMs : 5000
+      const cur = execCache.get(ex.command)
+      if (cur && now - cur.at < intervalMs) continue
+      let text = ''
+      try {
+        const r = unwrap(await $.process.run(['sh', '-c', ex.command]))
+        text = String(r?.stdout ?? '').trim().split(/\r?\n/)[0]?.trim() ?? ''
+      } catch {
+        text = ''
+      }
+      execCache.set(ex.command, { text, at: Date.now(), intervalMs })
     }
-    return yield* next(e)
-  })
-
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (config.position !== 'above') return next(e)
-    return draw($, e)
-  })
-
-  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
-    if (config.position !== 'below') return next(e)
-    return draw($, e)
-  })
+  }
 }
 
 async function draw($, e) {
   const { Box, Text } = $.ui.resolve(e)
   const data = await collect($)
-
   const columns = typeof e.props?.bodyColumns === 'number' ? e.props.bodyColumns : 80
-  const sections = fitSections(columns, config.sections)
-  const colours = themeFor(config.theme, working ? 'working' : 'idle')
+  const sections = fit(columns, cfg.sections)
+  const palette = mergeTheme(
+    themeFor(cfg.theme, working ? 'working' : 'idle'),
+    cfg.themes?.[cfg.theme]
+  )
 
-  const all = SECTION_NAMES.flatMap((k) => (Array.isArray(sections[k]) ? sections[k] : []))
-  const overrides = resolveOverrides(await readPublished($), all)
-
-  const renderSection = (key) => {
-    const list = Array.isArray(sections[key]) ? sections[key] : []
-    const parts = []
-    for (const entry of list) {
-      if (!entry || typeof entry.name !== 'string') continue
-      const fn = components[entry.name]
-      let text = overrides[entry.name]
-      if (text === undefined) {
-        try {
-          // ponytail: components get no $ . The validator only allows passing $ to
-          // a function declared at the top of this file, and these are looked up by
-          // name. If one ever needs $.process.run or $.fs.read, do that work here
-          // and hand the component a plain value instead.
-          text = typeof fn === 'function' ? fn(null, data) : ''
-        } catch {
-          text = ''
-        }
-      }
-      if (typeof text !== 'string' || text === '') continue
-      const pad = Number.isFinite(entry.padding) ? entry.padding : 0
-      const body = (entry.icon ? entry.icon + ' ' : '') + text
-      const padded = pad > 0 ? ' '.repeat(pad) + body + ' '.repeat(pad) : body
-      parts.push(
-        Text({
-          children: [padded],
-          color: typeof entry.color === 'string' ? entry.color : colours[key],
-        })
-      )
-    }
-    return parts
-  }
-
-  const join = (parts, sep) => {
+  const render = (keys, sep) => {
     const out = []
-    parts.forEach((p, i) => {
-      if (i > 0 && sep) out.push(Text({ children: [sep], dimColor: true }))
-      out.push(p)
-    })
+    for (const key of keys) {
+      const list = Array.isArray(sections[key]) ? sections[key] : []
+      for (const entry of list) {
+        const text = entryText(entry, data)
+        if (text === '') continue
+        if (out.length > 0 && sep) out.push(Text({ children: [sep], dimColor: true }))
+        const raw = entry.color ?? palette[key]
+        out.push(Text({ children: [text], color: typeof raw === 'string' && raw !== '' ? raw : undefined }))
+      }
+    }
     return out
   }
 
-  const left = join(
-    SECTION_NAMES.slice(0, 3).flatMap((k) => renderSection(k)),
-    config.componentSeparators.left
-  )
-  const right = join(
-    SECTION_NAMES.slice(3).flatMap((k) => renderSection(k)),
-    config.componentSeparators.right
-  )
-
   return Box({
     flexDirection: 'row',
-    columnGap: 0,
-    children: [...left, Box({ flexGrow: 1 }), ...right],
+    children: [
+      ...render(LEFT_KEYS, cfg.componentSeparators.left),
+      Box({ flexGrow: 1 }),
+      ...render(RIGHT_KEYS, cfg.componentSeparators.right),
+    ],
   })
+}
+
+export function register(on, options) {
+  on('engine.create', async ($, e, next) => {
+    const built = await next(e)
+    return { ...built, statusline: { publish } }
+  })
+
+  on('session.start', async ($, e, next) => {
+    cfg = await readConfig($, options)
+    $.clock.every(1000, () => {
+      refreshExec($)
+      $.ui.invalidate('ui.render')
+    })
+    return next(e)
+  })
+
+  on('turn.start', async ($, e, next) => {
+    working = true
+    dataCache.at = 0
+    return next(e)
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    working = false
+    dataCache.at = 0
+    return next(e)
+  })
+
+  on('turn.step', async function* ($, e, next) {
+    if (e?.effort) {
+      effort = String(e.effort)
+      dataCache.at = 0
+    }
+    return yield* next(e)
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) =>
+    cfg?.position === 'below' ? next(e) : draw($, e)
+  )
+
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) =>
+    cfg?.position === 'below' ? draw($, e) : next(e)
+  )
 }

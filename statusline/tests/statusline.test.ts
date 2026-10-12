@@ -25,6 +25,16 @@ const USAGE = {
   cost: 1.234,
 }
 
+function stubs(on, sections) {
+  const clock = mock.clock(on)
+  on('settings.read', () => ({ value: { pluginConfigs: { 'statusline@claude-mods': { options: { sections } } } } }))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.usage', () => ({ value: USAGE }))
+  on('session.model', () => ({ value: 'opus' }))
+  on('session.cwd', () => ({ value: '/work' }))
+  return clock
+}
+
 test('draws model, context and limits from the session', async ($, on) => {
   mock.clock(on)
   on('session.start', () => ({ cwd: '/work/claude-mods' }))
@@ -64,6 +74,101 @@ test('a turn marks the line as working and drops empty components', async ($, on
   const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await ui.find({ type: 'Text', text: /WORK/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /context/ })).toBeUndefined()
+
+  await ui.unmount()
+})
+
+test('a published value renders through a from entry', {
+  plugins: [
+    {
+      name: 'pub',
+      register(on) {
+        on('session.start', ($, e, next) => {
+          $.statusline.publish({ id: 'local-proxy', values: { rate5h: 31 } })
+          return next(e)
+        })
+      },
+    },
+  ],
+}, async ($, on) => {
+  stubs(on, { y: [{ from: { id: 'local-proxy', field: 'rate5h', fmt: 'percent' } }] })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /31%/ })).toBeDefined()
+
+  await ui.unmount()
+})
+
+test('a from template substitutes multiple fields', {
+  plugins: [
+    {
+      name: 'pub',
+      register(on) {
+        on('session.start', ($, e, next) => {
+          $.statusline.publish({ id: 'local-proxy', values: { provider: 'anthropic', alias: 'work' } })
+          return next(e)
+        })
+      },
+    },
+  ],
+}, async ($, on) => {
+  stubs(on, { y: [{ from: { id: 'local-proxy', fmt: '${provider}/${alias}' } }] })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /anthropic\/work/ })).toBeDefined()
+
+  await ui.unmount()
+})
+
+test('an exec entry renders command output', async ($, on) => {
+  const clock = stubs(on, { c: [{ exec: { command: 'git rev-parse --abbrev-ref HEAD', intervalMs: 0 } }] })
+  on('process.run', () => ({ value: { exitCode: 0, stdout: 'main\n', stderr: '' } }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await clock.advance(1000)
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /main/ })).toBeDefined()
+
+  await ui.unmount()
+})
+
+test('a missing publisher renders nothing and does not throw', async ($, on) => {
+  stubs(on, { y: [{ from: { id: 'never', field: 'x' } }] })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(ui).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /undefined/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /null/ })).toBeUndefined()
+
+  await ui.unmount()
+})
+
+test('a number fmt renders the published value', {
+  plugins: [
+    {
+      name: 'pub',
+      register(on) {
+        on('session.start', ($, e, next) => {
+          $.statusline.publish({ id: 'local-proxy', values: { rate5h: 31 } })
+          return next(e)
+        })
+      },
+    },
+  ],
+}, async ($, on) => {
+  stubs(on, { y: [{ from: { id: 'local-proxy', field: 'rate5h', fmt: 'number' } }] })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+
+  const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await ui.find({ type: 'Text', text: /31/ })).toBeDefined()
 
   await ui.unmount()
 })

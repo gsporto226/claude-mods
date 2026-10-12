@@ -4,5 +4,23 @@
   "description": "Customizable status line for Claude Code: lualine-style sections, themes, and data from other mods",
   "author": {
     "name": "Gabriel Porto"
+  },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "theme": {
+      "type": "string",
+      "title": "Theme",
+      "description": "Colour theme for the status line",
+      "options": ["auto", "gruvbox", "nord", "tokyo-night", "mono"],
+      "default": "auto"
+    },
+    "position": {
+      "type": "string",
+      "title": "Position",
+      "description": "Where the status line is drawn",
+      "options": ["above", "below"],
+      "default": "above"
+    }
   }
 }

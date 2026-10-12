@@ -1,6 +1,6 @@
-const safe = (fn) => ($, data) => {
+const safe = (fn) => (data) => {
   try {
-    const v = fn($, data)
+    const v = fn(data)
     return typeof v === 'string' ? v : ''
   } catch {
     return ''
@@ -20,27 +20,27 @@ const findRate = (data, kinds) => {
   return hit && typeof hit.percentUsed === 'number' ? fmtPercent(hit.percentUsed) : ''
 }
 
-const mode = safe(($, data) => (data?.working ? 'WORK' : 'IDLE'))
-const model = safe(($, data) => (typeof data?.model === 'string' ? data.model : ''))
-const effort = safe(($, data) => (typeof data?.effort === 'string' ? data.effort : ''))
-const context = safe(($, data) => {
+const mode = safe((data) => (data?.working ? 'WORK' : 'IDLE'))
+const model = safe((data) => (typeof data?.model === 'string' ? data.model : ''))
+const effort = safe((data) => (typeof data?.effort === 'string' ? data.effort : ''))
+const context = safe((data) => {
   const c = data?.context
   const hasT = typeof c?.tokens === 'number'
   const hasP = typeof c?.percent === 'number'
   if (!hasT && !hasP) return ''
   return `${hasT ? fmtTokens(c.tokens) : '-'} (${hasP ? fmtPercent(c.percent) : '-'})`
 })
-const contextBar = safe(($, data) => {
+const contextBar = safe((data) => {
   const pct = data?.context?.percent
   if (typeof pct !== 'number') return ''
   const filled = Math.max(0, Math.min(10, Math.round(pct / 10)))
   return '▰'.repeat(filled) + '▱'.repeat(10 - filled)
 })
-// hyphens are stripped before matching, so 'five-hour' matches 'fivehour';
+// kind is matched lowercase with '-' stripped, so 'five-hour' hits 'fivehour';
 // underscore forms like 'five_hour' are listed literally
-const rate5h = safe(($, data) => findRate(data, ['five_hour', 'fivehour', '5h']))
-const rateWeek = safe(($, data) => findRate(data, ['seven_day', 'sevenday', '7d', 'week']))
-const cost = safe(($, data) => {
+const rate5h = safe((data) => findRate(data, ['five_hour', 'fivehour', '5h']))
+const rateWeek = safe((data) => findRate(data, ['seven_day', 'sevenday', '7d', 'week']))
+const cost = safe((data) => {
   const c = data?.cost
   if (typeof c === 'number') return '$' + c.toFixed(2)
   if (c && typeof c === 'object') {
@@ -50,13 +50,11 @@ const cost = safe(($, data) => {
   }
   return ''
 })
-const account = () => ''
-const cwd = safe(($, data) => {
+const cwd = safe((data) => {
   const p = data?.cwd
   if (typeof p !== 'string' || p === '') return ''
   const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
   return i === -1 ? p : p.slice(i + 1)
 })
-const branch = () => ''
 
-export const components = { mode, model, effort, context, contextBar, rate5h, rateWeek, cost, account, cwd, branch }
+export const components = { mode, model, effort, context, contextBar, rate5h, rateWeek, cost, cwd }

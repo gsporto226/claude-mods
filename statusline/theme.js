@@ -28,7 +28,22 @@ export const themes = {
   },
 }
 
+export const THEME_NAMES = ['auto', 'gruvbox', 'nord', 'tokyo-night', 'mono']
+
+const KEYS = ['a', 'b', 'c', 'x', 'y', 'z']
+
+const str = (v) => (typeof v === 'string' && v !== '' ? v : undefined)
+
 export function themeFor(name, state) {
   const theme = Object.hasOwn(themes, name) ? themes[name] : themes[DEFAULT_THEME]
-  return Object.hasOwn(theme, state) ? theme[state] : theme.idle
+  const src = Object.hasOwn(theme, state) ? theme[state] : theme.idle
+  const out = {}
+  for (const k of KEYS) out[k] = str(src?.[k])
+  return out
+}
+
+export function mergeTheme(base, override) {
+  const out = {}
+  for (const k of KEYS) out[k] = str(override?.[k]) ?? str(base?.[k])
+  return out
 }
